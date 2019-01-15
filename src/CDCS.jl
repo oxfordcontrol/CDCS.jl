@@ -26,14 +26,14 @@ end
 # min c'x,      max b'y
 # s.t. Ax = b,   c - A'x ∈ K
 #       x ∈ K
-function sedumi(A::Union{Matrix{Float64}, SparseMatrixCSC{Float64}},
-                b::Vector{Float64}, c::Vector{Float64},
-                K::Cone = Cone(0, size(A, 2));
-                kws...)
+function cdcs(A::Union{Matrix{Float64}, SparseMatrixCSC{Float64}},
+              b::Vector{Float64}, c::Vector{Float64},
+              K::Cone = Cone(0, size(A, 2));
+              kws...)
     pars = Dict{String, Any}(string(key) => value for (key, value) in kws)
-    # There are 3 output arguments: x, y and info so we use `3` above
-    x, y, info = mxcall(:cdcs, 3, A, b, c, K, pars)
-    return to_vec(x), to_vec(y), info
+    # There are 4 output arguments: x, y, z and info so we use `4` below
+    x, y, z, info = mxcall(:cdcs, 4, A, b, c, K, pars)
+    return to_vec(x), to_vec(y), to_vec(z), info
 end
 
 include("MOI_wrapper.jl")

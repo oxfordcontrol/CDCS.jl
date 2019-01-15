@@ -7,12 +7,10 @@ using CDCS
     A = [10.0 -7.0 -1.0 0.0
           1.0  0.5  0.0 1.0]
     b = [5.0, 3.0]
-    sol, dual, status = cdcs(A, b, c)
-    @test sol ≈ sparse([1, 2], [1, 1], [47/24, 25//12], 4, 1)
-    @test dual ≈ [1/8, -1/4]
-    @test iszero(status["pinf"])
-    @test iszero(status["dinf"])
-    @test iszero(status["numerr"])
-    @test status["feasratio"] == 1
-    @test status["iter"] == 4
+    sol, dual, z, status = cdcs(Matrix(A'), b, c, CDCS.Cone(0, 4))
+    tol = 1e-2
+    @test sol ≈ [47/24, 25//12, 0, 0] atol=tol rtol=tol
+    @test dual ≈ [1/8, -1/4] atol=tol rtol=tol
+    @test z ≈ [0, 0, 1/8, 1/4] atol=tol rtol=tol
+    @test status["cost"] ≈ -1/8 atol=tol rtol=tol
 end

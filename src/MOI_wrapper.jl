@@ -33,7 +33,7 @@ end
 
 # Used to build the data with allocate-load during `copy_to`.
 # When `optimize!` is called, a the data is passed to CDCS
-# using `sedumi` and the `ModelData` struct is discarded
+# using `cdcs` and the `ModelData` struct is discarded
 mutable struct ModelData
     m::Int # Number of rows/constraints of CDCS dual/MOI primal
     n::Int # Number of cols/variables of CDCS primal/MOI dual
@@ -315,7 +315,7 @@ function MOI.optimize!(optimizer::Optimizer)
     b = optimizer.data.b
     optimizer.data = nothing # Allows GC to free optimizer.data before At is loaded to CDCS
 
-    x, y, info = sedumi(At, b, c, optimizer.cone.K; optimizer.options...)
+    x, y, info = cdcs(At, b, c, optimizer.cone.K; optimizer.options...)
 
     objval = (optimizer.maxsense ? 1 : -1) * dot(b, y) + objconstant
     optimizer.sol = Solution(x, y, c - At' * y, objval, info)
