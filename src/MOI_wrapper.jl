@@ -52,8 +52,8 @@ mutable struct ConeData
     sum_s2::Int # cached value of sum(s.^2)
     nrows::Dict{Int, Int} # The number of rows of each vector sets, this is used by `constrrows` to recover the number of rows used by a constraint when getting `ConstraintPrimal` or `ConstraintDual`
     function ConeData()
-        new(Cone(0, 0, Float64[], Float64[], Float64[]),
-            0, 0, 0, Dict{Int, Int}())
+        new(Cone(0, 0, Float64[], Float64[]),
+            0, 0, Dict{Int, Int}())
     end
 end
 
@@ -315,10 +315,10 @@ function MOI.optimize!(optimizer::Optimizer)
     b = optimizer.data.b
     optimizer.data = nothing # Allows GC to free optimizer.data before At is loaded to CDCS
 
-    x, y, info = cdcs(At, b, c, optimizer.cone.K; optimizer.options...)
+    x, y, z, info = cdcs(At, b, c, optimizer.cone.K; optimizer.options...)
 
     objval = (optimizer.maxsense ? 1 : -1) * dot(b, y) + objconstant
-    optimizer.sol = Solution(x, y, c - At' * y, objval, info)
+    optimizer.sol = Solution(x, y, z, objval, info)
 end
 
 function MOI.get(optimizer::Optimizer, ::MOI.SolveTime)
@@ -341,35 +341,19 @@ function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
     if optimizer.sol isa Nothing
         return MOI.OPTIMIZE_NOT_CALLED
     end
-    pinf      = optimizer.sol.info["pinf"]
-    dinf      = optimizer.sol.info["dinf"]
-    numerr    = optimizer.sol.info["numerr"]
-    if numerr == 2
-        return MOI.NUMERICAL_ERROR
-    end
-    @assert iszero(numerr) || isone(numerr)
-    accurate = iszero(numerr)
-    if isone(pinf)
-        if accurate
-            return MOI.DUAL_INFEASIBLE
-        else
-            return MOI.ALMOST_DUAL_INFEASIBLE
-        end
-    end
-    if isone(dinf)
-        if accurate
-            return MOI.INFEASIBLE
-        else
-            return MOI.ALMOST_INFEASIBLE
-        end
-    end
-    @assert iszero(pinf) && iszero(dinf)
-    # TODO when do we return SLOW_PROGRESS ?
-    #      Maybe we should use feasratio
-    if accurate
+    status = optimizer.sol.info["problem"]
+    @show status
+    if status == 0
         return MOI.OPTIMAL
+    elseif status == 1
+        return MOI.DUAL_INFEASIBLE
+    elseif status == 2
+        return MOI.INFEASIBLE
+    elseif status == 3
+        return MOI.ITERATION_LIMIT
     else
-        return MOI.ALMOST_OPTIMAL
+        @assert status == 4
+        return MOI.NUMERICAL_ERROR
     end
 end
 
@@ -380,29 +364,30 @@ function MOI.get(optimizer::Optimizer,
     if optimizer.sol isa Nothing
         return MOI.NO_SOLUTION
     end
-    pinf      = optimizer.sol.info["pinf"]
-    dinf      = optimizer.sol.info["dinf"]
-    numerr    = optimizer.sol.info["numerr"]
-    if numerr == 2
-        return MOI.UNKNOWN_RESULT_STATUS
+    if optimizer.sol isa Nothing
+        return MOI.OPTIMIZE_NOT_CALLED
     end
-    @assert iszero(numerr) || isone(numerr)
-    accurate = iszero(numerr)
-    if isone(attr isa MOI.PrimalStatus ? pinf : dinf)
-        if accurate
+    status = optimizer.sol.info["problem"]
+    @show status
+    if status == 0
+        return MOI.FEASIBLE_POINT
+    elseif status == 1
+        if attr isa MOI.PrimalStatus
             return MOI.INFEASIBILITY_CERTIFICATE
         else
-            return MOI.NEARLY_INFEASIBILITY_CERTIFICATE
+            return MOI.NO_SOLUTION
         end
-    end
-    if isone(attr isa MOI.PrimalStatus ? dinf : pinf)
-        return MOI.INFEASIBLE_POINT
-    end
-    @assert iszero(pinf) && iszero(dinf)
-    if accurate
-        return MOI.FEASIBLE_POINT
+    elseif status == 2
+        if attr isa MOI.PrimalStatus
+            return MOI.NO_SOLUTION
+        else
+            return MOI.INFEASIBILITY_CERTIFICATE
+        end
+    elseif status == 3
+        return MOI.UNKNOWN_RESULT_STATUS
     else
-        return MOI.NEARLY_FEASIBLE_POINT
+        @assert status == 4
+        return MOI.UNKNOWN_RESULT_STATUS
     end
 end
 function MOI.get(optimizer::Optimizer, ::MOI.VariablePrimal, vi::VI)
