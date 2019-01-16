@@ -40,7 +40,8 @@ config = MOIT.TestConfig(atol=3e-2, rtol=3e-2)
 @testset "Unit" begin
     MOIT.unittest(MOIB.SplitInterval{Float64}(MOIB.Vectorize{Float64}(optimizer)),
                   config,
-                  ["solve_affine_deletion_edge_cases", "solve_blank_obj", # FIXME
+                  [# Need to investigate...
+                   "solve_with_lowerbound", "solve_affine_deletion_edge_cases", "solve_blank_obj",
                    # Quadratic functions are not supported
                    "solve_qcp_edge_cases", "solve_qp_edge_cases",
                    # Integer and ZeroOne sets are not supported
@@ -54,5 +55,7 @@ end
 
 @testset "Continuous conic problems" begin
     MOIT.contconictest(MOIB.SquarePSD{Float64}(MOIB.RootDet{Float64}(MOIB.GeoMean{Float64}(MOIB.RSOC{Float64}(MOIB.Vectorize{Float64}(optimizer))))),
-                       config, ["rootdets", "exp", "logdet"])
+                       config, [# See https://github.com/JuliaOpt/MathOptInterface.jl/pull/632,
+                                "rotatedsoc1v",
+                                "rotatedsoc2", "rootdets", "exp", "logdet"])
 end

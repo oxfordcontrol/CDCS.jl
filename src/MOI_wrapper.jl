@@ -258,9 +258,26 @@ function MOIU.load_constraint(optimizer::Optimizer, ci, f::MOI.VectorAffineFunct
     optimizer.data.c[i] = orderval(scalecoef(f.constants, false, s,
                                              1:MOI.dimension(s)),
                                    s)
-    append!(optimizer.data.I, offset .+ orderidx(I, s))
+    V = scalecoef(V, true, s, I)
+    I = orderidx(I, s)
+    if s isa MOI.PositiveSemidefiniteConeTriangle
+        # Contrarily to SeDuMi, CDCS does not work if the A_i are not symmetric
+        # we move half of off-diagonal (i, j) coefficients to (j, i)
+        dim = s.side_dimension
+        for k in eachindex(I)
+            i = 1 + (I[k] - 1) % dim
+            j = 1 + div(I[k] - 1, dim)
+            if i != j
+                push!(I, j + dim * (i - 1))
+                push!(J, J[k])
+                push!(V, V[k] / 2)
+                V[k] /= 2
+            end
+        end
+    end
+    append!(optimizer.data.I, offset .+ I)
     append!(optimizer.data.J, J)
-    append!(optimizer.data.V, scalecoef(V, true, s, I))
+    append!(optimizer.data.V, V)
 end
 
 function MOIU.allocate_variables(optimizer::Optimizer, nvars::Integer)
@@ -342,7 +359,6 @@ function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
         return MOI.OPTIMIZE_NOT_CALLED
     end
     status = optimizer.sol.info["problem"]
-    @show status
     if status == 0
         return MOI.OPTIMAL
     elseif status == 1
@@ -368,7 +384,6 @@ function MOI.get(optimizer::Optimizer,
         return MOI.OPTIMIZE_NOT_CALLED
     end
     status = optimizer.sol.info["problem"]
-    @show status
     if status == 0
         return MOI.FEASIBLE_POINT
     elseif status == 1
@@ -404,7 +419,12 @@ function MOI.get(optimizer::Optimizer, ::MOI.ConstraintPrimal,
     rows = constrrows(optimizer, ci)
     sqr = optimizer.sol.slack[offset .+ rows]
     tri = reorderval(sqr, S)
-    return unscalecoef(tri, S)
+    if S == MOI.Nonpositives
+        return -tri
+    else
+        # No need to unscale (i, j) because half was moved to (j, i)
+        return tri
+    end
 end
 
 function MOI.get(optimizer::Optimizer, ::MOI.ConstraintDual, ci::CI{<:MOI.AbstractFunction, S}) where S <: MOI.AbstractSet
