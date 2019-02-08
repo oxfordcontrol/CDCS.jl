@@ -13,7 +13,7 @@ model = Model(with_optimizer(CDCS.Optimizer))
 ```
 To suppress output, do
 ```julia
-model = Model(with_optimizer(CDCS.Optimizer, fid=0))
+model = Model(with_optimizer(CDCS.Optimizer, verbose=0))
 ```
 
 ## Installation
