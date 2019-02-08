@@ -20,8 +20,8 @@ const MOIU = MOI.Utilities
 # of the sets just listed above.
 
 const SF = Union{MOI.VectorOfVariables, MOI.VectorAffineFunction{Float64}}
-const SS = Union{MOI.Zeros, MOI.Nonnegatives, MOI.Nonpositives,
-                 MOI.SecondOrderCone, MOI.PositiveSemidefiniteConeTriangle}
+const SS = Union{MOI.Zeros, MOI.Nonnegatives, MOI.SecondOrderCone,
+                 MOI.PositiveSemidefiniteConeTriangle}
 
 mutable struct Solution
     x::Vector{Float64}
@@ -95,8 +95,6 @@ function MOI.copy_to(dest::Optimizer, src::MOI.ModelLike; kws...)
     return MOIU.automatic_copy_to(dest, src; kws...)
 end
 
-const LPCones = Union{MOI.Nonnegatives, MOI.Nonpositives}
-
 # Computes cone dimensions
 function constroffset(cone::ConeData,
                       ci::CI{<:MOI.AbstractFunction, MOI.Zeros})
@@ -110,10 +108,10 @@ function _allocate_constraint(cone::ConeData, f, s::MOI.Zeros)
     return ci
 end
 function constroffset(cone::ConeData,
-                      ci::CI{<:MOI.AbstractFunction, <:LPCones})
+                      ci::CI{<:MOI.AbstractFunction, MOI.Nonnegatives})
     return Int(cone.K.f) + ci.value
 end
-function _allocate_constraint(cone::ConeData, f, s::LPCones)
+function _allocate_constraint(cone::ConeData, f, s::MOI.Nonnegatives)
     ci = cone.K.l
     cone.K.l += MOI.dimension(s)
     return ci
@@ -176,52 +174,32 @@ end
 
 # Scale coefficients depending on rows index on symmetric packed upper triangular form
 # coef: List of coefficients
-# minus: if true, multiply the result by -1
 # rev: if true, we unscale instead (e.g. divide by √2 instead of multiply for PSD cone)
 # rows: List of row indices
 # d: dimension of set
-function _scalecoef(coef, minus::Bool,
-                    ::Type{<:MOI.AbstractSet},
-                    rev, args...)
-    return minus ? -coef : coef
-end
-function _scalecoef(coef, minus::Bool,
-                    ::Type{MOI.Nonpositives},
-                    rev, args...)
-    return minus ? coef : -coef
-end
-function _scalecoef(coef::AbstractVector, minus::Bool,
-                    ::Type{MOI.PositiveSemidefiniteConeTriangle},
-                    rev::Bool,
-                    rows::AbstractVector, d::Integer)
-    scaling = minus ? -1 : 1
-    scaling2 = rev ? scaling / 2 : scaling * 2
+function _scalecoef(coef::AbstractVector, rev::Bool, rows::AbstractVector,
+                    d::Integer)
+    scaling = rev ? 0.5 : 2.0
     output = copy(coef)
     diagidx = BitSet()
     for i in 1:d
         push!(diagidx, trimap(i, i))
     end
     for i in 1:length(output)
-        if rows[i] in diagidx
+        if !(rows[i] in diagidx)
             output[i] *= scaling
-        else
-            output[i] *= scaling2
         end
     end
     return output
 end
-# Unscale the coefficients in `coef` with respective rows in `rows` for a set `s` and multiply by `-1` if `minus` is `true`.
-scalecoef(coef, minus, s, args...) = _scalecoef(coef, minus, typeof(s), false, args...)
-function scalecoef(coef, minus, s::MOI.PositiveSemidefiniteConeTriangle,
-                   rows)
-    return _scalecoef(coef, minus, typeof(s), false, rows, s.side_dimension)
+# Unscale the coefficients in `coef` with respective rows in `rows` for a set `s`
+function scalecoef(coef, s::MOI.PositiveSemidefiniteConeTriangle, rows)
+    return _scalecoef(coef, false, rows, s.side_dimension)
 end
-# Unscale the coefficients in `coef` for a set of type `S`
-unscalecoef(coef, S::Type{<:MOI.AbstractSet}) = _scalecoef(coef, false, S, true)
 # Unscale the coefficients of `coef` in symmetric packed upper triangular form
-function unscalecoef(coef, S::Type{MOI.PositiveSemidefiniteConeTriangle})
+function unscalecoef(coef)
     len = length(coef)
-    return _scalecoef(coef, false, S, true, 1:len, sympackeddim(len))
+    return _scalecoef(coef, true, 1:len, sympackeddim(len))
 end
 
 output_index(t::MOI.VectorAffineTerm) = t.output_index
@@ -235,15 +213,8 @@ constrrows(s::MOI.AbstractVectorSet) = 1:MOI.dimension(s)
 constrrows(s::MOI.PositiveSemidefiniteConeTriangle) = 1:(s.side_dimension^2)
 # When only the index is available, use the `optimizer.ncone.nrows` field
 constrrows(optimizer::Optimizer, ci::CI{<:MOI.AbstractVectorFunction, <:MOI.AbstractVectorSet}) = 1:optimizer.cone.nrows[constroffset(optimizer, ci)]
+
 MOIU.load_constraint(optimizer::Optimizer, ci, f::MOI.VectorOfVariables, s) = MOIU.load_constraint(optimizer, ci, MOI.VectorAffineFunction{Float64}(f), s)
-orderval(val, s) = val
-function orderval(val, s::MOI.PositiveSemidefiniteConeTriangle)
-    return sympackedUtosquareU(val, s.side_dimension)
-end
-orderidx(idx, s) = idx
-function orderidx(idx, s::MOI.PositiveSemidefiniteConeTriangle)
-    sympackedUtosquareUidx(idx, s.side_dimension)
-end
 function MOIU.load_constraint(optimizer::Optimizer, ci, f::MOI.VectorAffineFunction, s::MOI.AbstractVectorSet)
     A = sparse(output_index.(f.terms), variable_index_value.(f.terms), coefficient.(f.terms))
     # sparse combines duplicates with + but does not remove zeros created so we call dropzeros!
@@ -252,15 +223,12 @@ function MOIU.load_constraint(optimizer::Optimizer, ci, f::MOI.VectorAffineFunct
     offset = constroffset(optimizer, ci)
     rows = constrrows(s)
     optimizer.cone.nrows[offset] = length(rows)
-    i = offset .+ rows
-    # The SCS format is b - Ax ∈ cone
-    # so minus=false for b and minus=true for A
-    optimizer.data.c[i] = orderval(scalecoef(f.constants, false, s,
-                                             1:MOI.dimension(s)),
-                                   s)
-    V = scalecoef(V, true, s, I)
-    I = orderidx(I, s)
+    c = f.constants
     if s isa MOI.PositiveSemidefiniteConeTriangle
+        c = scalecoef(c, s, 1:MOI.dimension(s))
+        c = sympackedUtosquareU(c, s.side_dimension)
+        V = scalecoef(V, s, I)
+        I = sympackedUtosquareUidx(I, s.side_dimension)
         # Contrarily to SeDuMi, CDCS does not work if the A_i are not symmetric
         # we move half of off-diagonal (i, j) coefficients to (j, i)
         dim = s.side_dimension
@@ -275,9 +243,11 @@ function MOIU.load_constraint(optimizer::Optimizer, ci, f::MOI.VectorAffineFunct
             end
         end
     end
+    # The CDCS format is b - Ax ∈ cone
+    optimizer.data.c[offset .+ rows] = c
     append!(optimizer.data.I, offset .+ I)
     append!(optimizer.data.J, J)
-    append!(optimizer.data.V, V)
+    append!(optimizer.data.V, -V)
 end
 
 function MOIU.allocate_variables(optimizer::Optimizer, nvars::Integer)
@@ -409,38 +379,34 @@ function MOI.get(optimizer::Optimizer, ::MOI.VariablePrimal, vi::VI)
     optimizer.sol.y[vi.value]
 end
 MOI.get(optimizer::Optimizer, a::MOI.VariablePrimal, vi::Vector{VI}) = MOI.get.(optimizer, a, vi)
-reorderval(val, s) = val
-function reorderval(val, ::Type{MOI.PositiveSemidefiniteConeTriangle})
-    return squareUtosympackedU(val)
-end
 function MOI.get(optimizer::Optimizer, ::MOI.ConstraintPrimal,
                  ci::CI{<:MOI.AbstractFunction, S}) where S <: MOI.AbstractSet
     offset = constroffset(optimizer, ci)
     rows = constrrows(optimizer, ci)
-    sqr = optimizer.sol.slack[offset .+ rows]
-    tri = reorderval(sqr, S)
-    if S == MOI.Nonpositives
-        return -tri
-    else
+    primal = optimizer.sol.slack[offset .+ rows]
+    if S == MOI.PositiveSemidefiniteConeTriangle
+        primal = squareUtosympackedU(primal)
         # No need to unscale (i, j) because half was moved to (j, i)
-        return tri
     end
+    return primal
 end
 
 function MOI.get(optimizer::Optimizer, ::MOI.ConstraintDual, ci::CI{<:MOI.AbstractFunction, S}) where S <: MOI.AbstractSet
     offset = constroffset(optimizer, ci)
     rows = constrrows(optimizer, ci)
-    sqr = optimizer.sol.x[offset .+ rows]
-    tri = reorderval(sqr, S)
+    dual = optimizer.sol.x[offset .+ rows]
     if S == MOI.PositiveSemidefiniteConeTriangle
+        tmp = dual
+        dual = squareUtosympackedU(dual)
         n = sqrdim(length(rows))
         for i in 1:n, j in 1:(i-1)
             # Add lower diagonal dual. It should be equal to upper diagonal dual
             # but `unscalecoef` will divide by 2 so it will do the mean
-            tri[trimap(i, j)] += sqr[i + (j-1) * n]
+            dual[trimap(i, j)] += tmp[i + (j-1) * n]
         end
+        dual = unscalecoef(dual)
     end
-    return unscalecoef(tri, S)
+    return dual
 end
 
 MOI.get(optimizer::Optimizer, ::MOI.ResultCount) = 1
