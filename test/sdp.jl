@@ -19,25 +19,23 @@ using CDCS
               1.0 0.0 1.0 0.0 0.0]
         b = [1.0, 0.0]
         c = [0.0, 1.0, 0.0, 0.0, 1.0]
-        primal, dual, info = cdcs(Matrix(A'), b, c, CDCS.Cone(0, 1, [], [2]),
-                                  verbose=0)
-        @test primal ≈ [1, 1, -1, -1, 1]
-        @test dual ≈ [2.0, 0.0]
-        @test info["pinf"] == 0.0
-        @test info["dinf"] == 0.0
-        @test info["numerr"] == 0.0
-        @test info["iter"] == 3.0
-        @test info["feasratio"] ≈ 1.0 rtol=1e-4
+        primal, dual, z, info = cdcs(Matrix(A'), b, c, CDCS.Cone(0, 1, [], [2]),
+                                     verbose=0)
+        @test primal ≈ [1, 1, -1, -1, 1] atol=1e-3
+        @test dual ≈ [2.0, 0.0] atol=1e-3
+        @test z ≈ [0, 1, 1, 1, 1] atol=1e-3
+        @test info["problem"] == 0.0
     end
     @testset "Unbounded" begin
         A = -[0.0 0.0 1.0 0.0
               0.0 1.0 0.0 0.0]
         b = [1.0, 0.0]
         c = [1.0, 0.0, 0.0, 1.0]
-        primal, dual, info = cdcs(Matrix(A'), b, c, CDCS.Cone(0, 0, [], [2]),
-                                  verbose=0)
-        @test isempty(primal)
-        @test dual == [1.0, -1.0]
-        @test info["pinf"] == 1.0
+        primal, dual, z, info = cdcs(Matrix(A'), b, c, CDCS.Cone(0, 0, [], [2]),
+                                     verbose=0)
+        @test primal == [Inf, -Inf, -Inf, Inf]
+        @test dual == [Inf, -Inf]
+        @test z == [Inf, -Inf, -Inf, Inf]
+        @test info["problem"] == 1.0
     end
 end
