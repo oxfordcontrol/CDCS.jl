@@ -24,6 +24,8 @@ mutable struct Solution
     y::Vector{Float64}
     slack::Vector{Float64}
     objective_value::Float64
+    dual_objective_value::Float64
+    objective_constant::Float64
     info::Dict{String, Any}
 end
 
@@ -58,14 +60,32 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     maxsense::Bool
     data::Union{Nothing, ModelData} # only non-Nothing between MOI.copy_to and MOI.optimize!
     sol::Union{Nothing, Solution}
-    options::Iterators.Pairs
-    function Optimizer(; options...)
-        new(ConeData(), false, nothing, nothing, options)
+    silent::Bool
+    options::Dict{Symbol, Any}
+    function Optimizer(; kwargs...)
+        optimizer = new(ConeData(), false, nothing, nothing, false, Dict{Symbol, Any}())
+        for (key, value) in kwargs
+            MOI.set(optimizer, MOI.RawParameter(key), value)
+        end
+        return optimizer
     end
 
 end
 
 MOI.get(::Optimizer, ::MOI.SolverName) = "CDCS"
+
+function MOI.set(optimizer::Optimizer, param::MOI.RawParameter, value)
+    optimizer.options[param.name] = value
+end
+function MOI.get(optimizer::Optimizer, param::MOI.RawParameter)
+    return optimizer.options[param.name]
+end
+
+MOI.supports(::Optimizer, ::MOI.Silent) = true
+function MOI.set(optimizer::Optimizer, ::MOI.Silent, value::Bool)
+    optimizer.silent = value
+end
+MOI.get(optimizer::Optimizer, ::MOI.Silent) = optimizer.silent
 
 function MOI.is_empty(optimizer::Optimizer)
     !optimizer.maxsense && optimizer.data === nothing
@@ -302,27 +322,28 @@ function MOI.optimize!(optimizer::Optimizer)
     b = optimizer.data.b
     optimizer.data = nothing # Allows GC to free optimizer.data before At is loaded to CDCS
 
-    x, y, z, info = cdcs(At, b, c, optimizer.cone.K; optimizer.options...)
+    options = optimizer.options
+    if optimizer.silent
+        options = copy(options)
+        options[:verbose] = 0
+    end
 
-    objective_value = (optimizer.maxsense ? 1 : -1) * dot(b, y) + objective_constant
-    optimizer.sol = Solution(x, y, z, objective_value, info)
+    x, y, z, info = cdcs(At, b, c, optimizer.cone.K; options...)
+
+    objective_value = (optimizer.maxsense ? 1 : -1) * dot(b, y)
+    dual_objective_value = (optimizer.maxsense ? 1 : -1) * dot(c, x)
+    optimizer.sol = Solution(x, y, z, objective_value, dual_objective_value,
+                             objective_constant, info)
 end
 
 function MOI.get(optimizer::Optimizer, ::MOI.SolveTime)
-    return optimizer.sol.info["cpusec"]
+    return optimizer.sol.info["time"]["total"]
+end
+function MOI.get(optimizer::Optimizer, ::MOI.RawStatusString)
+    return string("problem = ", optimizer.sol.info["problem"])
 end
 
 # Implements getter for result value and statuses
-# SeDuMI returns one of the following values (based on SeDuMi_Guide_11 by Pólik):
-# feasratio:  1.0 problem with complementary solution
-#            -1.0 strongly infeasible problem
-#             between -1.0 and 1.0 nasty problem
-# pinf = 1.0 : y is infeasibility certificate => CDCS primal/MOI dual is infeasible
-# dinf = 1.0 : x is infeasibility certificate => CDCS dual/MOI primal is infeasible
-# pinf = 0.0 = dinf : x and y are near feasible
-# numerr: 0 desired accuracy (specified by pars.eps) is achieved
-#         1 reduced accuracy (specified by pars.bigeps) is achieved
-#         2 failure due to numerical problems
 
 function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
     if optimizer.sol isa Nothing
@@ -343,7 +364,20 @@ function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
     end
 end
 
-MOI.get(optimizer::Optimizer, ::MOI.ObjectiveValue) = optimizer.sol.objective_value
+function MOI.get(optimizer::Optimizer, ::MOI.ObjectiveValue)
+    value = optimizer.sol.objective_value
+    if !MOIU.is_ray(MOI.get(optimizer, MOI.PrimalStatus()))
+        value += optimizer.sol.objective_constant
+    end
+    return value
+end
+function MOI.get(optimizer::Optimizer, ::MOI.DualObjectiveValue)
+    value = optimizer.sol.dual_objective_value
+    if !MOIU.is_ray(MOI.get(optimizer, MOI.DualStatus()))
+        value += optimizer.sol.objective_constant
+    end
+    return value
+end
 
 function MOI.get(optimizer::Optimizer,
                  attr::Union{MOI.PrimalStatus, MOI.DualStatus})

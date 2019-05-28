@@ -11,7 +11,8 @@ const MOIB = MOI.Bridges
 # linear9 : > 3000, < 4000
 # linear15: > 20000, Don't know if ever converges so we exclude it
 import CDCS
-optimizer = CDCS.Optimizer(verbose=0, maxIter=4000)
+optimizer = CDCS.Optimizer(maxIter=4000)
+MOI.set(optimizer, MOI.Silent(), true)
 
 @testset "SolverName" begin
     @test MOI.get(optimizer, MOI.SolverName()) == "CDCS"
