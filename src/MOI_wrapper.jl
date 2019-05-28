@@ -19,15 +19,11 @@ const MOIU = MOI.Utilities
 # supported supported sets are `VectorAffineFunction`-in-`S` where `S` is one
 # of the sets just listed above.
 
-const SF = Union{MOI.VectorOfVariables, MOI.VectorAffineFunction{Float64}}
-const SS = Union{MOI.Zeros, MOI.Nonnegatives, MOI.SecondOrderCone,
-                 MOI.PositiveSemidefiniteConeTriangle}
-
 mutable struct Solution
     x::Vector{Float64}
     y::Vector{Float64}
     slack::Vector{Float64}
-    objval::Float64
+    objective_value::Float64
     info::Dict{String, Any}
 end
 
@@ -41,7 +37,7 @@ mutable struct ModelData
     J::Vector{Int} # List of cols of A'
     V::Vector{Float64} # List of coefficients of A
     c::Vector{Float64} # objective of CDCS primal/MOI dual
-    objconstant::Float64 # The objective is min c'x + objconstant
+    objective_constant::Float64 # The objective is min c'x + objective_constant
     b::Vector{Float64} # objective of CDCS dual/MOI primal
 end
 
@@ -89,7 +85,12 @@ function MOI.supports(::Optimizer,
     return true
 end
 
-MOI.supports_constraint(::Optimizer, ::Type{<:SF}, ::Type{<:SS}) = true
+function MOI.supports_constraint(
+    ::Optimizer, ::Type{MOI.VectorAffineFunction{Float64}},
+    ::Type{<:Union{MOI.Zeros, MOI.Nonnegatives, MOI.SecondOrderCone,
+                   MOI.PositiveSemidefiniteConeTriangle}})
+    return true
+end
 
 function MOI.copy_to(dest::Optimizer, src::MOI.ModelLike; kws...)
     return MOIU.automatic_copy_to(dest, src; kws...)
@@ -214,7 +215,6 @@ constrrows(s::MOI.PositiveSemidefiniteConeTriangle) = 1:(s.side_dimension^2)
 # When only the index is available, use the `optimizer.ncone.nrows` field
 constrrows(optimizer::Optimizer, ci::CI{<:MOI.AbstractVectorFunction, <:MOI.AbstractVectorSet}) = 1:optimizer.cone.nrows[constroffset(optimizer, ci)]
 
-MOIU.load_constraint(optimizer::Optimizer, ci, f::MOI.VectorOfVariables, s) = MOIU.load_constraint(optimizer, ci, MOI.VectorAffineFunction{Float64}(f), s)
 function MOIU.load_constraint(optimizer::Optimizer, ci, f::MOI.VectorAffineFunction, s::MOI.AbstractVectorSet)
     A = sparse(output_index.(f.terms), variable_index_value.(f.terms), coefficient.(f.terms))
     # sparse combines duplicates with + but does not remove zeros created so we call dropzeros!
@@ -287,7 +287,7 @@ function MOIU.load(optimizer::Optimizer, ::MOI.ObjectiveFunction,
                    f::MOI.ScalarAffineFunction)
     c0 = Vector(sparsevec(variable_index_value.(f.terms), coefficient.(f.terms),
                           optimizer.data.n))
-    optimizer.data.objconstant = f.constant
+    optimizer.data.objective_constant = f.constant
     optimizer.data.b = optimizer.maxsense ? c0 : -c0
     return nothing
 end
@@ -298,14 +298,14 @@ function MOI.optimize!(optimizer::Optimizer)
     n = optimizer.data.n
     At = sparse(optimizer.data.I, optimizer.data.J, optimizer.data.V)
     c = optimizer.data.c
-    objconstant = optimizer.data.objconstant
+    objective_constant = optimizer.data.objective_constant
     b = optimizer.data.b
     optimizer.data = nothing # Allows GC to free optimizer.data before At is loaded to CDCS
 
     x, y, z, info = cdcs(At, b, c, optimizer.cone.K; optimizer.options...)
 
-    objval = (optimizer.maxsense ? 1 : -1) * dot(b, y) + objconstant
-    optimizer.sol = Solution(x, y, z, objval, info)
+    objective_value = (optimizer.maxsense ? 1 : -1) * dot(b, y) + objective_constant
+    optimizer.sol = Solution(x, y, z, objective_value, info)
 end
 
 function MOI.get(optimizer::Optimizer, ::MOI.SolveTime)
@@ -343,7 +343,7 @@ function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
     end
 end
 
-MOI.get(optimizer::Optimizer, ::MOI.ObjectiveValue) = optimizer.sol.objval
+MOI.get(optimizer::Optimizer, ::MOI.ObjectiveValue) = optimizer.sol.objective_value
 
 function MOI.get(optimizer::Optimizer,
                  attr::Union{MOI.PrimalStatus, MOI.DualStatus})

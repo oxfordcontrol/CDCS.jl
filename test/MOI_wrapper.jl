@@ -9,7 +9,7 @@ const MOIB = MOI.Bridges
 # Iterations:
 # linear5 : > 1000, < 2000
 # linear9 : > 3000, < 4000
-# linear15: > 20000, I don't know if ever converges so we exclude it
+# linear15: > 20000, Don't know if ever converges so we exclude it
 import CDCS
 optimizer = CDCS.Optimizer(verbose=0, maxIter=4000)
 
@@ -31,14 +31,12 @@ MOIU.@model(ModelData, (), (),
 const cache = MOIU.UniversalFallback(ModelData{Float64}())
 const cached = MOIU.CachingOptimizer(cache, optimizer)
 
-# Essential bridges that are needed for all tests
-const bridged = MOIB.Vectorize{Float64}(MOIB.NonposToNonneg{Float64}(cached))
+const bridged = MOIB.full_bridge_optimizer(cached, Float64)
 
 config = MOIT.TestConfig(atol=3e-2, rtol=3e-2)
 
 @testset "Unit" begin
-    MOIT.unittest(MOIB.SplitInterval{Float64}(bridged),
-                  config,
+    MOIT.unittest(bridged, config,
                   [# Need to investigate...
                    "solve_with_lowerbound", "solve_affine_deletion_edge_cases", "solve_blank_obj",
                    # Quadratic functions are not supported
@@ -48,13 +46,11 @@ config = MOIT.TestConfig(atol=3e-2, rtol=3e-2)
 end
 
 @testset "Continuous linear problems" begin
-    MOIT.contlineartest(MOIB.SplitInterval{Float64}(bridged),
-                        config, ["linear12", "linear15"])
+    MOIT.contlineartest(bridged, config, ["linear12", "linear15"])
 end
 
 @testset "Continuous conic problems" begin
-    MOIT.contconictest(MOIB.SquarePSD{Float64}(MOIB.RootDet{Float64}(MOIB.GeoMean{Float64}(MOIB.RSOC{Float64}(bridged)))),
-                       config, [# See https://github.com/JuliaOpt/MathOptInterface.jl/pull/632,
-                                "rotatedsoc1v",
-                                "rotatedsoc2", "rootdets", "exp", "logdet"])
+    MOIT.contconictest(bridged, config,
+                       [# rotatedsoc2: Returns Inf and -Inf instead of infeasibility certificate
+                        "rotatedsoc2", "rootdets", "exp", "logdet"])
 end
