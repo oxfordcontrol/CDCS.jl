@@ -235,7 +235,7 @@ constrrows(s::MOI.PositiveSemidefiniteConeTriangle) = 1:(s.side_dimension^2)
 # When only the index is available, use the `optimizer.ncone.nrows` field
 constrrows(optimizer::Optimizer, ci::CI{<:MOI.AbstractVectorFunction, <:MOI.AbstractVectorSet}) = 1:optimizer.cone.nrows[constroffset(optimizer, ci)]
 
-function MOIU.load_constraint(optimizer::Optimizer, ci, f::MOI.VectorAffineFunction, s::MOI.AbstractVectorSet)
+function MOIU.load_constraint(optimizer::Optimizer, ci::MOI.ConstraintIndex, f::MOI.VectorAffineFunction, s::MOI.AbstractVectorSet)
     A = sparse(output_index.(f.terms), variable_index_value.(f.terms), coefficient.(f.terms))
     # sparse combines duplicates with + but does not remove zeros created so we call dropzeros!
     dropzeros!(A)
