@@ -33,6 +33,8 @@ config = MOIT.TestConfig(atol=3e-2, rtol=3e-2)
 
 @testset "Unit" begin
     MOIT.unittest(bridged, config, [
+        # `TimeLimitSec` not supported.
+        "time_limit_sec",
         # Need to investigate...
         "solve_with_lowerbound", "solve_affine_deletion_edge_cases", "solve_blank_obj",
         # Need https://github.com/JuliaOpt/MathOptInterface.jl/issues/529
