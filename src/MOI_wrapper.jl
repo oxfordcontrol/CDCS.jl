@@ -65,7 +65,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     function Optimizer(; kwargs...)
         optimizer = new(ConeData(), false, nothing, nothing, false, Dict{Symbol, Any}())
         for (key, value) in kwargs
-            MOI.set(optimizer, MOI.RawParameter(key), value)
+            MOI.set(optimizer, MOI.RawParameter(String(key)), value)
         end
         return optimizer
     end
@@ -75,10 +75,24 @@ end
 MOI.get(::Optimizer, ::MOI.SolverName) = "CDCS"
 
 function MOI.set(optimizer::Optimizer, param::MOI.RawParameter, value)
-    optimizer.options[param.name] = value
+    if !(param.name isa String)
+        Base.depwarn(
+            "passing `$(param.name)` to `MOI.RawParameter` as type " *
+            "`$(typeof(param.name))` is deprecated. Use a string instead.",
+            Symbol("MOI.set")
+        )
+    end
+    optimizer.options[Symbol(param.name)] = value
 end
 function MOI.get(optimizer::Optimizer, param::MOI.RawParameter)
-    return optimizer.options[param.name]
+    if !(param.name isa String)
+        Base.depwarn(
+            "passing `$(param.name)` to `MOI.RawParameter` as type " *
+            "`$(typeof(param.name))` is deprecated. Use a string instead.",
+            Symbol("MOI.set")
+        )
+    end
+    return optimizer.options[Symbol(param.name)]
 end
 
 MOI.supports(::Optimizer, ::MOI.Silent) = true
@@ -364,14 +378,16 @@ function MOI.get(optimizer::Optimizer, ::MOI.TerminationStatus)
     end
 end
 
-function MOI.get(optimizer::Optimizer, ::MOI.ObjectiveValue)
+function MOI.get(optimizer::Optimizer, attr::MOI.ObjectiveValue)
+    MOI.check_result_index_bounds(optimizer, attr)
     value = optimizer.sol.objective_value
     if !MOIU.is_ray(MOI.get(optimizer, MOI.PrimalStatus()))
         value += optimizer.sol.objective_constant
     end
     return value
 end
-function MOI.get(optimizer::Optimizer, ::MOI.DualObjectiveValue)
+function MOI.get(optimizer::Optimizer, attr::MOI.DualObjectiveValue)
+    MOI.check_result_index_bounds(optimizer, attr)
     value = optimizer.sol.dual_objective_value
     if !MOIU.is_ray(MOI.get(optimizer, MOI.DualStatus()))
         value += optimizer.sol.objective_constant
@@ -381,11 +397,8 @@ end
 
 function MOI.get(optimizer::Optimizer,
                  attr::Union{MOI.PrimalStatus, MOI.DualStatus})
-    if optimizer.sol isa Nothing
+    if attr.N > MOI.get(optimizer, MOI.ResultCount()) || optimizer.sol isa Nothing
         return MOI.NO_SOLUTION
-    end
-    if optimizer.sol isa Nothing
-        return MOI.OPTIMIZE_NOT_CALLED
     end
     status = optimizer.sol.info["problem"]
     if status == 0
@@ -409,12 +422,14 @@ function MOI.get(optimizer::Optimizer,
         return MOI.UNKNOWN_RESULT_STATUS
     end
 end
-function MOI.get(optimizer::Optimizer, ::MOI.VariablePrimal, vi::VI)
+function MOI.get(optimizer::Optimizer, attr::MOI.VariablePrimal, vi::VI)
+    MOI.check_result_index_bounds(optimizer, attr)
     optimizer.sol.y[vi.value]
 end
 MOI.get(optimizer::Optimizer, a::MOI.VariablePrimal, vi::Vector{VI}) = MOI.get.(optimizer, a, vi)
-function MOI.get(optimizer::Optimizer, ::MOI.ConstraintPrimal,
+function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintPrimal,
                  ci::CI{<:MOI.AbstractFunction, S}) where S <: MOI.AbstractSet
+    MOI.check_result_index_bounds(optimizer, attr)
     offset = constroffset(optimizer, ci)
     rows = constrrows(optimizer, ci)
     primal = optimizer.sol.slack[offset .+ rows]
@@ -425,7 +440,8 @@ function MOI.get(optimizer::Optimizer, ::MOI.ConstraintPrimal,
     return primal
 end
 
-function MOI.get(optimizer::Optimizer, ::MOI.ConstraintDual, ci::CI{<:MOI.AbstractFunction, S}) where S <: MOI.AbstractSet
+function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintDual, ci::CI{<:MOI.AbstractFunction, S}) where S <: MOI.AbstractSet
+    MOI.check_result_index_bounds(optimizer, attr)
     offset = constroffset(optimizer, ci)
     rows = constrrows(optimizer, ci)
     dual = optimizer.sol.x[offset .+ rows]

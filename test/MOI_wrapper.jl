@@ -11,32 +11,29 @@ const MOIB = MOI.Bridges
 # linear9 : > 3000, < 4000
 # linear15: > 20000, Don't know if ever converges so we exclude it
 import CDCS
-optimizer = CDCS.Optimizer(maxIter=4000)
-MOI.set(optimizer, MOI.Silent(), true)
+const OPTIMIZER_CONSTRUCTOR = MOI.OptimizerWithAttributes(CDCS.Optimizer, MOI.Silent() => true, "maxIter" => 4000)
+const OPTIMIZER = MOI.instantiate(OPTIMIZER_CONSTRUCTOR)
 
 @testset "SolverName" begin
-    @test MOI.get(optimizer, MOI.SolverName()) == "CDCS"
+    @test MOI.get(OPTIMIZER, MOI.SolverName()) == "CDCS"
 end
 
 @testset "supports_allocate_load" begin
-    @test MOIU.supports_allocate_load(optimizer, false)
-    @test !MOIU.supports_allocate_load(optimizer, true)
+    @test MOIU.supports_allocate_load(OPTIMIZER, false)
+    @test !MOIU.supports_allocate_load(OPTIMIZER, true)
 end
 
-# UniversalFallback is needed for starting values, even if they are ignored by CDCS
-const cache = MOIU.UniversalFallback(MOIU.Model{Float64}())
-const cached = MOIU.CachingOptimizer(cache, optimizer)
-
-const bridged = MOIB.full_bridge_optimizer(cached, Float64)
-
-config = MOIT.TestConfig(atol=3e-2, rtol=3e-2)
+const BRIDGED = MOI.instantiate(OPTIMIZER_CONSTRUCTOR, with_bridge_type=Float64)
+const CONFIG = MOIT.TestConfig(atol=3e-2, rtol=3e-2)
 
 @testset "Unit" begin
-    MOIT.unittest(bridged, config, [
+    MOIT.unittest(BRIDGED, CONFIG, [
+        # `NumberOfThreads` not supported.
+        "number_threads",
         # `TimeLimitSec` not supported.
         "time_limit_sec",
         # Need to investigate...
-        "solve_with_lowerbound", "solve_affine_deletion_edge_cases", "solve_blank_obj",
+        "solve_with_lowerbound", "solve_affine_deletion_edge_cases", "solve_blank_obj", "solve_single_variable_dual_min", "solve_single_variable_dual_max",
         # Need https://github.com/JuliaOpt/MathOptInterface.jl/issues/529
         "solve_qp_edge_cases",
         # Error using cdcs_hsde.preprocess (line 14)
@@ -50,15 +47,19 @@ config = MOIT.TestConfig(atol=3e-2, rtol=3e-2)
 end
 
 @testset "Continuous linear problems" begin
-    MOIT.contlineartest(bridged, config, [
+    MOIT.contlineartest(BRIDGED, CONFIG, [
         # Need to investigate...
         "linear12", "linear15"])
 end
 
 @testset "Continuous conic problems" begin
-    MOIT.contconictest(bridged, config, [
+    MOIT.contconictest(BRIDGED, CONFIG, [
+        # ITERATION_LIMIT
+        "normone1v", "normone1f",
         # rotatedsoc2: Returns Inf and -Inf instead of infeasibility certificate
         "rotatedsoc2",
+        # Need to investigate...
+        "psdt3", "psds3",
         # Unsupported cones
-        "pow", "rootdets", "exp", "logdet"])
+        "pow", "dualpow", "rootdets", "exp", "dualexp", "logdet", "normspec", "normnuc", "relentr"])
 end
