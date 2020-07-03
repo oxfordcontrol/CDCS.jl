@@ -250,10 +250,10 @@ constrrows(s::MOI.PositiveSemidefiniteConeTriangle) = 1:(s.side_dimension^2)
 constrrows(optimizer::Optimizer, ci::CI{<:MOI.AbstractVectorFunction, <:MOI.AbstractVectorSet}) = 1:optimizer.cone.nrows[constroffset(optimizer, ci)]
 
 function MOIU.load_constraint(optimizer::Optimizer, ci::MOI.ConstraintIndex, f::MOI.VectorAffineFunction, s::MOI.AbstractVectorSet)
-    A = sparse(output_index.(f.terms), variable_index_value.(f.terms), coefficient.(f.terms))
-    # sparse combines duplicates with + but does not remove zeros created so we call dropzeros!
-    dropzeros!(A)
-    I, J, V = findnz(A)
+    func = MOIU.canonical(f)
+    I = Int[output_index(term) for term in func.terms]
+    J = Int[variable_index_value(term) for term in func.terms]
+    V = Float64[-coefficient(term) for term in func.terms]
     offset = constroffset(optimizer, ci)
     rows = constrrows(s)
     optimizer.cone.nrows[offset] = length(rows)
@@ -281,7 +281,7 @@ function MOIU.load_constraint(optimizer::Optimizer, ci::MOI.ConstraintIndex, f::
     optimizer.data.c[offset .+ rows] = c
     append!(optimizer.data.I, offset .+ I)
     append!(optimizer.data.J, J)
-    append!(optimizer.data.V, -V)
+    append!(optimizer.data.V, V)
 end
 
 function MOIU.allocate_variables(optimizer::Optimizer, nvars::Integer)
