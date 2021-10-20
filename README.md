@@ -22,7 +22,7 @@ model = Model(with_optimizer(CDCS.Optimizer, verbose=0))
 You can install `CDCS.jl` through the
 [Julia package manager](https://docs.julialang.org/en/v1/stdlib/Pkg/index.html):
 ```julia
-] add https://github.com/blegat/CDCS.jl.git
+] add https://github.com/oxfordcontrol/CDCS.jl.git
 ```
 but you first need to make sure that you satisfy the requirements of the
 [MATLAB.jl](https://github.com/JuliaInterop/MATLAB.jl) Julia package and that
