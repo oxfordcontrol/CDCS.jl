@@ -23,8 +23,8 @@ end
 
 function test_options()
     optimizer = CDCS.Optimizer()
-    MOI.set(optimizer, MOI.RawOptimizerAttribute("printlevel"), 1)
-    @test MOI.get(optimizer, MOI.RawOptimizerAttribute("printlevel")) == 1
+    MOI.set(optimizer, MOI.RawOptimizerAttribute("verbose"), 1)
+    @test MOI.get(optimizer, MOI.RawOptimizerAttribute("verbose")) == 1
 end
 
 function test_runtests()
