@@ -30,10 +30,13 @@ end
 function test_runtests()
     model = MOI.Utilities.CachingOptimizer(
         MOI.Utilities.UniversalFallback(MOI.Utilities.Model{Float64}()),
-        MOI.instantiate(CDCS.Optimizer, with_bridge_type=Float64),
+        MOI.instantiate(CDCS.Optimizer, with_bridge_type = Float64),
     )
     # `Variable.ZerosBridge` makes dual needed by some tests fail.
-    MOI.Bridges.remove_bridge(model.optimizer, MathOptInterface.Bridges.Variable.ZerosBridge{Float64})
+    MOI.Bridges.remove_bridge(
+        model.optimizer,
+        MathOptInterface.Bridges.Variable.ZerosBridge{Float64},
+    )
     MOI.set(model, MOI.Silent(), true)
     MOI.set(model, MOI.RawOptimizerAttribute("maxIter"), 4000)
     MOI.Test.runtests(

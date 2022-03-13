@@ -56,8 +56,7 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     silent::Bool
     options::Dict{Symbol,Any}
     function Optimizer(; kwargs...)
-        optimizer =
-            new(nothing, nothing, false, Dict{Symbol,Any}())
+        optimizer = new(nothing, nothing, false, Dict{Symbol,Any}())
         if !isempty(kwargs)
             @warn("""Passing optimizer attributes as keyword arguments to
             CDCS.Optimizer is deprecated. Use
@@ -134,12 +133,7 @@ function MOI.supports_constraint(
     ::Optimizer,
     ::Type{MOI.VectorAffineFunction{Float64}},
     ::Type{
-        <:Union{
-            MOI.Zeros,
-            MOI.Nonnegatives,
-            MOI.SecondOrderCone,
-            ScaledPSDCone,
-        },
+        <:Union{MOI.Zeros,MOI.Nonnegatives,MOI.SecondOrderCone,ScaledPSDCone},
     },
 )
     return true
