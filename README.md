@@ -4,13 +4,13 @@
 solver. It exports the `cdcs` function that is a thin wrapper on top of the
 `cdcs` MATLAB function and use it to define the `CDCS.Optimizer` object that
 implements the solver-independent
-[MathOptInterface](https://github.com/JuliaOpt/MathOptInterface.jl) API.
+[MathOptInterface](https://github.com/jump-dev/MathOptInterface.jl) API.
 
-To use it with [JuMP](https://github.com/JuliaOpt/JuMP.jl), simply do
+To use it with [JuMP](https://github.com/jump-dev/JuMP.jl), simply do
 ```julia
 using JuMP
 using CDCS
-model = Model(optimizer_with_attributes(CDCS.Optimizer))
+model = Model(CDCS.Optimizer)
 ```
 To suppress output, do either
 ```julia
