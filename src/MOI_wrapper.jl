@@ -1,22 +1,44 @@
-using LinearAlgebra
-
 using MathOptInterface
 const MOI = MathOptInterface
-const CI = MOI.ConstraintIndex
-const VI = MOI.VariableIndex
 
-const MOIU = MOI.Utilities
+include("scaled_psd_cone_bridge.jl")
+
+import LinearAlgebra
 
 # CDCS solves the primal/dual pair
 # min c'x,       max b'y
 # s.t. Ax = b,   c - A'x ∈ K
 #       x ∈ K
-# where K is a product of Zeros, Nonnegatives, SecondOrderCone,
-# RotatedSecondOrderCone and PositiveSemidefiniteConeTriangle
+# where K is a product of `MOI.Zeros`, `MOI.Nonnegatives`,
+# `MOI.SecondOrderCone` and `CDCS.ScaledPSDCone`.
 
 # This wrapper copies the MOI problem to the CDCS dual so the natively
 # supported supported sets are `VectorAffineFunction`-in-`S` where `S` is one
 # of the sets just listed above.
+
+MOI.Utilities.@product_of_sets(
+    Cones,
+    MOI.Zeros,
+    MOI.Nonnegatives,
+    MOI.SecondOrderCone,
+    ScaledPSDCone,
+)
+
+const OptimizerCache = MOI.Utilities.GenericModel{
+    Float64,
+    MOI.Utilities.ObjectiveContainer{Float64},
+    MOI.Utilities.VariablesContainer{Float64},
+    MOI.Utilities.MatrixOfConstraints{
+        Float64,
+        MOI.Utilities.MutableSparseMatrixCSC{
+            Float64,
+            Int,
+            MOI.Utilities.OneBasedIndexing,
+        },
+        Vector{Float64},
+        Cones{Float64},
+    },
+}
 
 mutable struct Solution
     x::Vector{Float64}
@@ -28,93 +50,79 @@ mutable struct Solution
     info::Dict{String,Any}
 end
 
-# Used to build the data with allocate-load during `copy_to`.
-# When `optimize!` is called, a the data is passed to CDCS
-# using `cdcs` and the `ModelData` struct is discarded
-mutable struct ModelData
-    m::Int # Number of rows/constraints of CDCS dual/MOI primal
-    n::Int # Number of cols/variables of CDCS primal/MOI dual
-    I::Vector{Int} # List of rows of A'
-    J::Vector{Int} # List of cols of A'
-    V::Vector{Float64} # List of coefficients of A
-    c::Vector{Float64} # objective of CDCS primal/MOI dual
-    objective_constant::Float64 # The objective is min c'x + objective_constant
-    b::Vector{Float64} # objective of CDCS dual/MOI primal
-end
-
-# This is tied to CDCS's internal representation
-mutable struct ConeData
-    K::Cone
-    sum_q::Int # cached value of sum(q)
-    sum_s2::Int # cached value of sum(s.^2)
-    nrows::Dict{Int,Int} # The number of rows of each vector sets, this is used by `constrrows` to recover the number of rows used by a constraint when getting `ConstraintPrimal` or `ConstraintDual`
-    function ConeData()
-        return new(Cone(0, 0, Float64[], Float64[]), 0, 0, Dict{Int,Int}())
-    end
-end
-
 mutable struct Optimizer <: MOI.AbstractOptimizer
-    cone::ConeData
-    maxsense::Bool
-    data::Union{Nothing,ModelData} # only non-Nothing between MOI.copy_to and MOI.optimize!
+    cones::Union{Nothing,Cones{Float64}}
     sol::Union{Nothing,Solution}
     silent::Bool
     options::Dict{Symbol,Any}
     function Optimizer(; kwargs...)
-        optimizer =
-            new(ConeData(), false, nothing, nothing, false, Dict{Symbol,Any}())
+        optimizer = new(nothing, nothing, false, Dict{Symbol,Any}())
+        if !isempty(kwargs)
+            @warn("""Passing optimizer attributes as keyword arguments to
+            CDCS.Optimizer is deprecated. Use
+                MOI.set(model, MOI.RawOptimizerAttribute("key"), value)
+            or
+                JuMP.set_optimizer_attribute(model, "key", value)
+            instead.
+            """)
+        end
         for (key, value) in kwargs
-            MOI.set(optimizer, MOI.RawParameter(String(key)), value)
+            MOI.set(optimizer, MOI.RawOptimizerAttribute(String(key)), value)
         end
         return optimizer
     end
 end
 
+function MOI.default_cache(::Optimizer, ::Type{Float64})
+    return MOI.Utilities.UniversalFallback(OptimizerCache())
+end
+
+function MOI.get(::Optimizer, ::MOI.Bridges.ListOfNonstandardBridges)
+    return [ScaledPSDConeBridge{Float64}]
+end
+
 MOI.get(::Optimizer, ::MOI.SolverName) = "CDCS"
 
-function MOI.set(optimizer::Optimizer, param::MOI.RawParameter, value)
-    if !(param.name isa String)
-        Base.depwarn(
-            "passing `$(param.name)` to `MOI.RawParameter` as type " *
-            "`$(typeof(param.name))` is deprecated. Use a string instead.",
-            Symbol("MOI.set"),
-        )
-    end
+function MOI.is_empty(optimizer::Optimizer)
+    return optimizer.cones === nothing
+end
+function MOI.empty!(optimizer::Optimizer)
+    optimizer.cones = nothing
+    optimizer.sol = nothing
+    return
+end
+
+###
+### MOI.RawOptimizerAttribute
+###
+
+function MOI.set(optimizer::Optimizer, param::MOI.RawOptimizerAttribute, value)
     return optimizer.options[Symbol(param.name)] = value
 end
-function MOI.get(optimizer::Optimizer, param::MOI.RawParameter)
-    if !(param.name isa String)
-        Base.depwarn(
-            "passing `$(param.name)` to `MOI.RawParameter` as type " *
-            "`$(typeof(param.name))` is deprecated. Use a string instead.",
-            Symbol("MOI.set"),
-        )
-    end
+function MOI.get(optimizer::Optimizer, param::MOI.RawOptimizerAttribute)
     return optimizer.options[Symbol(param.name)]
 end
 
+###
+### MOI.Silent
+###
+
 MOI.supports(::Optimizer, ::MOI.Silent) = true
+
 function MOI.set(optimizer::Optimizer, ::MOI.Silent, value::Bool)
     return optimizer.silent = value
 end
+
 MOI.get(optimizer::Optimizer, ::MOI.Silent) = optimizer.silent
 
-function MOI.is_empty(optimizer::Optimizer)
-    return !optimizer.maxsense && optimizer.data === nothing
-end
-function MOI.empty!(optimizer::Optimizer)
-    optimizer.maxsense = false
-    optimizer.data = nothing # It should already be nothing except if an error is thrown inside copy_to
-    return optimizer.sol = nothing
-end
-
-MOIU.supports_allocate_load(::Optimizer, copy_names::Bool) = !copy_names
+###
+### MOI.AbstractModelAttribute
+###
 
 function MOI.supports(
     ::Optimizer,
     ::Union{
         MOI.ObjectiveSense,
-        MOI.ObjectiveFunction{MOI.SingleVariable},
         MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}},
     },
 )
@@ -125,287 +133,60 @@ function MOI.supports_constraint(
     ::Optimizer,
     ::Type{MOI.VectorAffineFunction{Float64}},
     ::Type{
-        <:Union{
-            MOI.Zeros,
-            MOI.Nonnegatives,
-            MOI.SecondOrderCone,
-            MOI.PositiveSemidefiniteConeTriangle,
-        },
+        <:Union{MOI.Zeros,MOI.Nonnegatives,MOI.SecondOrderCone,ScaledPSDCone},
     },
 )
     return true
 end
 
-function MOI.copy_to(dest::Optimizer, src::MOI.ModelLike; kws...)
-    return MOIU.automatic_copy_to(dest, src; kws...)
+function _map_sets(f, sets, ::Type{S}) where {S}
+    F = MOI.VectorAffineFunction{Float64}
+    cis = MOI.get(sets, MOI.ListOfConstraintIndices{F,S}())
+    return Int[f(MOI.get(sets, MOI.ConstraintSet(), ci)) for ci in cis]
 end
 
-# Computes cone dimensions
-function constroffset(cone::ConeData, ci::CI{<:MOI.AbstractFunction,MOI.Zeros})
-    return ci.value
-end
-#_allocate_constraint: Allocate indices for the constraint `f`-in-`s`
-# using information in `cone` and then update `cone`
-function _allocate_constraint(cone::ConeData, f, s::MOI.Zeros)
-    ci = Int(cone.K.f)
-    cone.K.f += MOI.dimension(s)
-    return ci
-end
-function constroffset(
-    cone::ConeData,
-    ci::CI{<:MOI.AbstractFunction,MOI.Nonnegatives},
-)
-    return Int(cone.K.f) + ci.value
-end
-function _allocate_constraint(cone::ConeData, f, s::MOI.Nonnegatives)
-    ci = cone.K.l
-    cone.K.l += MOI.dimension(s)
-    return ci
-end
-function constroffset(
-    cone::ConeData,
-    ci::CI{<:MOI.AbstractVectorFunction,<:MOI.SecondOrderCone},
-)
-    return Int(cone.K.f) + Int(cone.K.l) + ci.value
-end
-function _allocate_constraint(cone::ConeData, f, s::MOI.SecondOrderCone)
-    ci = cone.sum_q
-    push!(cone.K.q, s.dimension)
-    cone.sum_q += s.dimension
-    return ci
-end
-function constroffset(
-    cone::ConeData,
-    ci::CI{<:MOI.AbstractFunction,<:MOI.PositiveSemidefiniteConeTriangle},
-)
-    return Int(cone.K.f) + Int(cone.K.l) + cone.sum_q + ci.value
-end
-function _allocate_constraint(
-    cone::ConeData,
-    f,
-    s::MOI.PositiveSemidefiniteConeTriangle,
-)
-    ci = cone.sum_s2
-    push!(cone.K.s, s.side_dimension)
-    cone.sum_s2 += s.side_dimension^2
-    return ci
-end
-function constroffset(optimizer::Optimizer, ci::CI)
-    return constroffset(optimizer.cone, ci::CI)
-end
-function MOIU.allocate_constraint(
-    optimizer::Optimizer,
-    f::F,
-    s::S,
-) where {F<:MOI.AbstractFunction,S<:MOI.AbstractSet}
-    return CI{F,S}(_allocate_constraint(optimizer.cone, f, s))
-end
+function MOI.optimize!(dest::Optimizer, src::OptimizerCache)
+    MOI.empty!(dest)
+    index_map = MOI.Utilities.identity_index_map(src)
+    Ac = src.constraints
+    A = Ac.coefficients
 
-# Vectorized length for matrix dimension n
-sympackedlen(n) = div(n * (n + 1), 2)
-# Matrix dimension for vectorized length n
-sympackeddim(n) = div(isqrt(1 + 8n) - 1, 2)
-sqrdim(n) = isqrt(n)
-trimap(i::Integer, j::Integer) = i < j ? trimap(j, i) : div((i - 1) * i, 2) + j
-function sqrmap(i::Integer, j::Integer, n::Integer)
-    return i < j ? sqrmap(j, i, n) : i + (j - 1) * n
-end
-function _copyU(x, n, mapfrom, mapto)
-    y = zeros(eltype(x), mapto(n, n))
-    for i in 1:n, j in 1:i
-        y[mapto(i, j)] = x[mapfrom(i, j)]
-    end
-    return y
-end
-function squareUtosympackedU(x, n = sqrdim(length(x)))
-    return _copyU(x, n, (i, j) -> sqrmap(i, j, n), trimap)
-end
-function sympackedUtosquareU(x, n = sympackeddim(length(x)))
-    return _copyU(x, n, trimap, (i, j) -> sqrmap(i, j, n))
-end
-
-function sympackedUtosquareUidx(x::AbstractVector{<:Integer}, n)
-    y = similar(x)
-    map = squareUtosympackedU(1:n^2, n)
-    for i in eachindex(y)
-        y[i] = map[x[i]]
-    end
-    return y
-end
-
-# Scale coefficients depending on rows index on symmetric packed upper triangular form
-# coef: List of coefficients
-# rev: if true, we unscale instead (e.g. divide by √2 instead of multiply for PSD cone)
-# rows: List of row indices
-# d: dimension of set
-function _scalecoef(
-    coef::AbstractVector,
-    rev::Bool,
-    rows::AbstractVector,
-    d::Integer,
-)
-    scaling = rev ? 0.5 : 2.0
-    output = copy(coef)
-    diagidx = BitSet()
-    for i in 1:d
-        push!(diagidx, trimap(i, i))
-    end
-    for i in 1:length(output)
-        if !(rows[i] in diagidx)
-            output[i] *= scaling
+    model_attributes = MOI.get(src, MOI.ListOfModelAttributesSet())
+    objective_function_attr =
+        MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}}()
+    b = zeros(A.n)
+    max_sense = MOI.get(src, MOI.ObjectiveSense()) == MOI.MAX_SENSE
+    objective_constant = 0.0
+    if objective_function_attr in MOI.get(src, MOI.ListOfModelAttributesSet())
+        obj = MOI.get(src, objective_function_attr)
+        objective_constant = MOI.constant(obj)
+        for term in obj.terms
+            b[term.variable.value] += (max_sense ? 1 : -1) * term.coefficient
         end
     end
-    return output
-end
-# Unscale the coefficients in `coef` with respective rows in `rows` for a set `s`
-function scalecoef(coef, s::MOI.PositiveSemidefiniteConeTriangle, rows)
-    return _scalecoef(coef, false, rows, s.side_dimension)
-end
-# Unscale the coefficients of `coef` in symmetric packed upper triangular form
-function unscalecoef(coef)
-    len = length(coef)
-    return _scalecoef(coef, true, 1:len, sympackeddim(len))
-end
 
-output_index(t::MOI.VectorAffineTerm) = t.output_index
-variable_index_value(t::MOI.ScalarAffineTerm) = t.variable_index.value
-function variable_index_value(t::MOI.VectorAffineTerm)
-    return variable_index_value(t.scalar_term)
-end
-coefficient(t::MOI.ScalarAffineTerm) = t.coefficient
-coefficient(t::MOI.VectorAffineTerm) = coefficient(t.scalar_term)
-# constrrows: Recover the number of rows used by each constraint.
-# When, the set is available, simply use MOI.dimension
-constrrows(s::MOI.AbstractVectorSet) = 1:MOI.dimension(s)
-constrrows(s::MOI.PositiveSemidefiniteConeTriangle) = 1:(s.side_dimension^2)
-# When only the index is available, use the `optimizer.ncone.nrows` field
-function constrrows(
-    optimizer::Optimizer,
-    ci::CI{<:MOI.AbstractVectorFunction,<:MOI.AbstractVectorSet},
-)
-    return 1:optimizer.cone.nrows[constroffset(optimizer, ci)]
-end
+    At = SparseMatrixCSC(A.m, A.n, A.colptr, A.rowval, -A.nzval)
 
-function MOIU.load_constraint(
-    optimizer::Optimizer,
-    ci::MOI.ConstraintIndex,
-    f::MOI.VectorAffineFunction,
-    s::MOI.AbstractVectorSet,
-)
-    func = MOIU.canonical(f)
-    I = Int[output_index(term) for term in func.terms]
-    J = Int[variable_index_value(term) for term in func.terms]
-    V = Float64[-coefficient(term) for term in func.terms]
-    offset = constroffset(optimizer, ci)
-    rows = constrrows(s)
-    optimizer.cone.nrows[offset] = length(rows)
-    c = f.constants
-    if s isa MOI.PositiveSemidefiniteConeTriangle
-        c = scalecoef(c, s, 1:MOI.dimension(s))
-        c = sympackedUtosquareU(c, s.side_dimension)
-        V = scalecoef(V, s, I)
-        I = sympackedUtosquareUidx(I, s.side_dimension)
-        # Contrarily to SeDuMi, CDCS does not work if the A_i are not symmetric
-        # we move half of off-diagonal (i, j) coefficients to (j, i)
-        dim = s.side_dimension
-        for k in eachindex(I)
-            i = 1 + (I[k] - 1) % dim
-            j = 1 + div(I[k] - 1, dim)
-            if i != j
-                push!(I, j + dim * (i - 1))
-                push!(J, J[k])
-                push!(V, V[k] / 2)
-                V[k] /= 2
-            end
-        end
-    end
-    # The CDCS format is b - Ax ∈ cone
-    optimizer.data.c[offset.+rows] = c
-    append!(optimizer.data.I, offset .+ I)
-    append!(optimizer.data.J, J)
-    return append!(optimizer.data.V, V)
-end
-
-function MOIU.allocate_variables(optimizer::Optimizer, nvars::Integer)
-    optimizer.cone = ConeData()
-    optimizer.sol = nothing
-    return VI.(1:nvars)
-end
-
-function MOIU.load_variables(optimizer::Optimizer, nvars::Integer)
-    cone = optimizer.cone
-    m = Int(cone.K.f) + Int(cone.K.l) + cone.sum_q + cone.sum_s2
-    I = Int[]
-    J = Int[]
-    V = Float64[]
-    c = zeros(m)
-    b = zeros(nvars)
-    return optimizer.data = ModelData(m, nvars, I, J, V, c, 0.0, b)
-end
-
-function MOIU.allocate(
-    optimizer::Optimizer,
-    ::MOI.ObjectiveSense,
-    sense::MOI.OptimizationSense,
-)
-    return optimizer.maxsense = sense == MOI.MAX_SENSE
-end
-function MOIU.allocate(
-    ::Optimizer,
-    ::MOI.ObjectiveFunction,
-    ::MOI.Union{MOI.SingleVariable,MOI.ScalarAffineFunction{Float64}},
-) end
-
-function MOIU.load(::Optimizer, ::MOI.ObjectiveSense, ::MOI.OptimizationSense) end
-function MOIU.load(
-    optimizer::Optimizer,
-    ::MOI.ObjectiveFunction,
-    f::MOI.SingleVariable,
-)
-    return MOIU.load(
-        optimizer,
-        MOI.ObjectiveFunction{MOI.ScalarAffineFunction{Float64}}(),
-        MOI.ScalarAffineFunction{Float64}(f),
-    )
-end
-function MOIU.load(
-    optimizer::Optimizer,
-    ::MOI.ObjectiveFunction,
-    f::MOI.ScalarAffineFunction,
-)
-    c0 = Vector(
-        sparsevec(
-            variable_index_value.(f.terms),
-            coefficient.(f.terms),
-            optimizer.data.n,
-        ),
-    )
-    optimizer.data.objective_constant = f.constant
-    optimizer.data.b = optimizer.maxsense ? c0 : -c0
-    return nothing
-end
-
-function MOI.optimize!(optimizer::Optimizer)
-    cone = optimizer.cone
-    m = optimizer.data.m
-    n = optimizer.data.n
-    At = sparse(optimizer.data.I, optimizer.data.J, optimizer.data.V, m, n)
-    c = optimizer.data.c
-    objective_constant = optimizer.data.objective_constant
-    b = optimizer.data.b
-    optimizer.data = nothing # Allows GC to free optimizer.data before At is loaded to CDCS
-
-    options = optimizer.options
-    if optimizer.silent
+    options = dest.options
+    if dest.silent
         options = copy(options)
         options[:verbose] = 0
     end
 
-    x, y, z, info = cdcs(At, b, c, optimizer.cone.K; options...)
+    K = Cone(
+        Ac.sets.num_rows[1],
+        Ac.sets.num_rows[2] - Ac.sets.num_rows[1],
+        _map_sets(MOI.dimension, Ac, MOI.SecondOrderCone),
+        _map_sets(MOI.side_dimension, Ac, ScaledPSDCone),
+    )
 
-    objective_value = (optimizer.maxsense ? 1 : -1) * dot(b, y)
-    dual_objective_value = (optimizer.maxsense ? 1 : -1) * dot(c, x)
-    return optimizer.sol = Solution(
+    c = Ac.constants
+    x, y, z, info = cdcs(At, b, c, K; options...)
+
+    dest.cones = deepcopy(Ac.sets)
+    objective_value = (max_sense ? 1 : -1) * LinearAlgebra.dot(b, y)
+    dual_objective_value = (max_sense ? 1 : -1) * LinearAlgebra.dot(c, x)
+    dest.sol = Solution(
         x,
         y,
         z,
@@ -414,9 +195,25 @@ function MOI.optimize!(optimizer::Optimizer)
         objective_constant,
         info,
     )
+    return index_map, false
 end
 
-function MOI.get(optimizer::Optimizer, ::MOI.SolveTime)
+function MOI.optimize!(
+    dest::Optimizer,
+    src::MOI.Utilities.UniversalFallback{OptimizerCache},
+)
+    MOI.Utilities.throw_unsupported(src)
+    return MOI.optimize!(dest, src.model)
+end
+
+function MOI.optimize!(dest::Optimizer, src::MOI.ModelLike)
+    cache = OptimizerCache()
+    index_map = MOI.copy_to(cache, src)
+    MOI.optimize!(dest, cache)
+    return index_map, false
+end
+
+function MOI.get(optimizer::Optimizer, ::MOI.SolveTimeSec)
     return optimizer.sol.info["time"]["total"]
 end
 function MOI.get(optimizer::Optimizer, ::MOI.RawStatusString)
@@ -447,7 +244,7 @@ end
 function MOI.get(optimizer::Optimizer, attr::MOI.ObjectiveValue)
     MOI.check_result_index_bounds(optimizer, attr)
     value = optimizer.sol.objective_value
-    if !MOIU.is_ray(MOI.get(optimizer, MOI.PrimalStatus()))
+    if !MOI.Utilities.is_ray(MOI.get(optimizer, MOI.PrimalStatus()))
         value += optimizer.sol.objective_constant
     end
     return value
@@ -455,7 +252,7 @@ end
 function MOI.get(optimizer::Optimizer, attr::MOI.DualObjectiveValue)
     MOI.check_result_index_bounds(optimizer, attr)
     value = optimizer.sol.dual_objective_value
-    if !MOIU.is_ray(MOI.get(optimizer, MOI.DualStatus()))
+    if !MOI.Utilities.is_ray(MOI.get(optimizer, MOI.DualStatus()))
         value += optimizer.sol.objective_constant
     end
     return value
@@ -465,7 +262,7 @@ function MOI.get(
     optimizer::Optimizer,
     attr::Union{MOI.PrimalStatus,MOI.DualStatus},
 )
-    if attr.N > MOI.get(optimizer, MOI.ResultCount()) ||
+    if attr.result_index > MOI.get(optimizer, MOI.ResultCount()) ||
        optimizer.sol isa Nothing
         return MOI.NO_SOLUTION
     end
@@ -491,50 +288,30 @@ function MOI.get(
         return MOI.UNKNOWN_RESULT_STATUS
     end
 end
-function MOI.get(optimizer::Optimizer, attr::MOI.VariablePrimal, vi::VI)
+function MOI.get(
+    optimizer::Optimizer,
+    attr::MOI.VariablePrimal,
+    vi::MOI.VariableIndex,
+)
     MOI.check_result_index_bounds(optimizer, attr)
     return optimizer.sol.y[vi.value]
-end
-function MOI.get(optimizer::Optimizer, a::MOI.VariablePrimal, vi::Vector{VI})
-    return MOI.get.(optimizer, a, vi)
 end
 function MOI.get(
     optimizer::Optimizer,
     attr::MOI.ConstraintPrimal,
-    ci::CI{<:MOI.AbstractFunction,S},
-) where {S<:MOI.AbstractSet}
+    ci::MOI.ConstraintIndex,
+)
     MOI.check_result_index_bounds(optimizer, attr)
-    offset = constroffset(optimizer, ci)
-    rows = constrrows(optimizer, ci)
-    primal = optimizer.sol.slack[offset.+rows]
-    if S == MOI.PositiveSemidefiniteConeTriangle
-        primal = squareUtosympackedU(primal)
-        # No need to unscale (i, j) because half was moved to (j, i)
-    end
-    return primal
+    return optimizer.sol.slack[MOI.Utilities.rows(optimizer.cones, ci)]
 end
 
 function MOI.get(
     optimizer::Optimizer,
     attr::MOI.ConstraintDual,
-    ci::CI{<:MOI.AbstractFunction,S},
+    ci::MOI.ConstraintIndex{<:MOI.AbstractFunction,S},
 ) where {S<:MOI.AbstractSet}
     MOI.check_result_index_bounds(optimizer, attr)
-    offset = constroffset(optimizer, ci)
-    rows = constrrows(optimizer, ci)
-    dual = optimizer.sol.x[offset.+rows]
-    if S == MOI.PositiveSemidefiniteConeTriangle
-        tmp = dual
-        dual = squareUtosympackedU(dual)
-        n = sqrdim(length(rows))
-        for i in 1:n, j in 1:(i-1)
-            # Add lower diagonal dual. It should be equal to upper diagonal dual
-            # but `unscalecoef` will divide by 2 so it will do the mean
-            dual[trimap(i, j)] += tmp[i+(j-1)*n]
-        end
-        dual = unscalecoef(dual)
-    end
-    return dual
+    return optimizer.sol.x[MOI.Utilities.rows(optimizer.cones, ci)]
 end
 
 MOI.get(optimizer::Optimizer, ::MOI.ResultCount) = 1
