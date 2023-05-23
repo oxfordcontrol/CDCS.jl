@@ -1,41 +1,47 @@
-# CDCS
+# CDCS.jl
 
-`CDCS.jl` is an interface to the **[CDCS](https://github.com/oxfordcontrol/CDCS)**
-solver. It exports the `cdcs` function that is a thin wrapper on top of the
-`cdcs` MATLAB function and use it to define the `CDCS.Optimizer` object that
-implements the solver-independent
-[MathOptInterface](https://github.com/jump-dev/MathOptInterface.jl) API.
+[CDCS.jl](https://github.com/oxfordcontrol/CDCS.jl) is a wrapper for the
+[CDCS](https://github.com/oxfordcontrol/CDCS) solver. 
 
-To use it with [JuMP](https://github.com/jump-dev/JuMP.jl), simply do
-```julia
-using JuMP
-using CDCS
-model = Model(CDCS.Optimizer)
-```
-To suppress output, do either
-```julia
-set_silent(model)
-```
-or
-```julia
-model = Model(optimizer_with_attributes(CDCS.Optimizer, verbose=0))
-```
+The wrapper has two components:
+
+ * an exported `cdcs` function that is a thin wrapper on top of the `cdcs`
+   MATLAB function
+ * an interface to [MathOptInterface](https://github.com/jump-dev/MathOptInterface.jl)
+
+## License
+
+CDCS.jl is licensed under the [MIT license](https://github.com/oxfordcontrol/CDCS.jl/blob/master/LICENSE.md).
+
+The underlying solver [oxfordcontrol/CDCS](https://github.com/oxfordcontrol/CDCS)
+is licensed under the [LGPL v3 license](https://github.com/oxfordcontrol/CDCS/blob/master/LICENCE.txt).
+
+In addition, CDCS requires an installation of MATLAB, which is a closed-source
+commercial product for which you must [obtain a license](https://www.mathworks.com/products/matlab.html).
 
 ## Installation
 
-You can install `CDCS.jl` through the
-[Julia package manager](https://docs.julialang.org/en/v1/stdlib/Pkg/index.html):
-```julia
-] add CDCS
-```
-but you first need to make sure that you satisfy the requirements of the
+First, make sure that you satisfy the requirements of the
 [MATLAB.jl](https://github.com/JuliaInterop/MATLAB.jl) Julia package and that
-the CDCS software is installed in your
-[MATLAB™](http://www.mathworks.com/products/matlab/) installation.
+the CDCS software is installed in your [MATLAB™](http://www.mathworks.com/products/matlab/)
+installation.
 
-### Troubleshooting
+Then, install `CDCS.jl` using `Pkg.add`:
+```julia
+import Pkg
+Pkg.add("CDCS")
+```
 
-#### CDCS not in PATH
+## Use with JuMP
+
+To use CDCS with [JuMP](https://github.com/jump-dev/JuMP.jl), do:
+```julia
+using JuMP, CDCS
+model = Model(CDCS.Optimizer)
+set_attribute(model, "verbose", 0)
+```
+
+## Troubleshooting
 
 If you get the error:
 ```
@@ -56,20 +62,20 @@ Linear Programming example: Error During Test at /home/blegat/.julia/dev/CDCS/te
       @ ~/.julia/packages/MATLAB/SVjnA/src/engine.jl:317 [inlined]
     [4] cdcs(A::Matrix{Float64}, b::Vector{Float64}, c::Vector{Float64}, K::CDCS.Cone; kws::Base.Pairs{Symbol, Int64, Tuple{Symbol}, NamedTuple{(:verbose,), Tuple{Int64}}})
 ```
-The error means that we try to find the `cdcs` function with 1 output argument using the MATLAB C API but it wasn't found.
-This most likely means that you did not add CDCS to the MATLAB's path (i.e. the `toolbox/local/pathdef.m` file).
+The error means that we could not find the `cdcs` function with one output
+argument using the MATLAB C API.
 
-If modifying `toolbox/local/pathdef.m` does not work, the following should work where `/path/to/CDCS/` is the directory where the `CDCS` folder is located:
+This most likely means that you did not add CDCS to the MATLAB's path (that is,
+the `toolbox/local/pathdef.m` file).
+
+If modifying `toolbox/local/pathdef.m` does not work, the following should work
+where `/path/to/CDCS/` is the directory where the `CDCS` folder is located:
 ```julia
 julia> using MATLAB
 
 julia> cd("/path/to/CDCS/") do
            mat"cdcsInstall"
        end
-```
-This should make `CDCS.jl` work for the Julia session in which this is run.
-Alternatively, run
-```julia
+
 julia> mat"savepath"
 ```
-to make `CDCS.jl` work for future Julia sessions.
